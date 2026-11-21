@@ -16,7 +16,7 @@
     streamlit run app.py
 """
 
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 import inspect
 import json
 from pathlib import Path
@@ -37,6 +37,16 @@ st.set_page_config(
 # 超过 6 小时（例如第二天早上），说明新的一天已经开始了，
 # 页面会自动切换回对"下一次睡觉时间"的倒计时。
 GRACE_PERIOD = timedelta(hours=6)
+
+# 应用面向国内用户，统一使用北京时间（UTC+8，无夏令时）。
+# 不能直接使用服务器本地时间：Streamlit Cloud 的服务器时区是 UTC，
+# 否则部署后倒计时、熬夜判定和打卡时间都会与北京时间相差 8 小时。
+LOCAL_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+def now_local() -> datetime:
+    """返回北京时间的 naive datetime，便于和"每天的睡觉时间"直接比较。"""
+    return datetime.now(LOCAL_TZ).replace(tzinfo=None)
 
 # 打卡时间保存在 session_state 中，键名统一管理，避免手写字符串出错。
 CHECKIN_KEY = "checkin_at"
@@ -927,8 +937,9 @@ def render_countdown(target: datetime, bedtime: time) -> None:
     """把目标时间注入 HTML 模板，交给浏览器实时刷新倒计时。"""
     html = (
         COUNTDOWN_TEMPLATE
-        # 注意：naive datetime 的 timestamp() 会按系统本地时区计算，符合预期
-        .replace("__TARGET_MS__", str(int(target.timestamp() * 1000)))
+        # target 是 naive 的北京时间，必须显式带上 UTC+8 再转时间戳；
+        # 否则 Cloud 服务器会按 UTC 解释，浏览器端就会差 8 小时。
+        .replace("__TARGET_MS__", str(int(target.replace(tzinfo=LOCAL_TZ).timestamp() * 1000)))
         .replace("__BEDTIME__", bedtime.strftime("%H:%M"))
     )
     _embed_html(html, height=252)
@@ -1168,7 +1179,7 @@ def _handle_checkin() -> None:
     这样重跑时按钮和卡片都能直接渲染成"已打卡"状态，
     点击后能立刻看到变化，而不是等到下一次交互才刷新。
     """
-    now = datetime.now()
+    now = now_local()
     st.session_state[CHECKIN_KEY] = now
     st.session_state[JUST_CHECKED_KEY] = True
     _add_record("sleeps", now)
@@ -1176,7 +1187,7 @@ def _handle_checkin() -> None:
 
 def _handle_wake() -> None:
     """记录起床时间（同样放在回调里，重跑后立刻显示结果）。"""
-    now = datetime.now()
+    now = now_local()
     st.session_state[WAKE_KEY] = now
     st.session_state[JUST_WOKE_KEY] = True
     _add_record("wakes", now)
@@ -1217,7 +1228,7 @@ def main() -> None:
         st.session_state[MAIN_TEXT_KEY] = default_text
 
     # 当前时间在整次渲染中只取一次，保证侧边栏和主界面用的是同一个时间点
-    now = datetime.now()
+    now = now_local()
 
     # ---------------- 侧边栏：睡觉时间设置 ----------------
     with st.sidebar:
